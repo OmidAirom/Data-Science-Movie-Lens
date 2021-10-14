@@ -1,0 +1,316 @@
+---
+title: "HarvardX Data Science MovieLens project"
+author: "Omid Airom"
+date: "10/14/2021"
+output:
+  word_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Movie Lens
+
+This is the Report for the Movie Lens project in the last course of the Harvard University Data Science Professional Certificate in he edx educational platform.
+
+The aim of the project is to use the dataset provided by the course including 10 million rows of data and 6 features to build a model to predict the ratings of the movies in our dataset with a RMSE at least lower than 0.89999. To reach this goal we need to first have an exploration and analysis on the data and then build models until we get the required RMSE.
+
+RMSE is the root mean squared error that shows us how well our model works.
+
+```{r RMSE_function1, echo = FALSE}
+RMSE <- function(predictions, ratings){
+  sqrt(mean((predictions - ratings)^2))
+}
+```
+
+
+## Introduction
+
+Recommendation systems use ratings that users have given to items to make recommendations due to the ratings gathered by the other people who used these products. A lot of online stores make it available for costumers to rate the products they have buyed and  collec these data to make recommendations to other costumers.
+
+Grouplens research has done the same thing and collected a dataset from movie ratings that includes about 10 million rows and 6 feature for each row and we are using this dataset and machine learning methods to build a recommendation system to predict the movie ratings.
+
+
+
+## Dowloading Data
+
+Downloading and using the dataset :
+
+```{r, echo = TRUE, message = FALSE, warning = FALSE, eval = TRUE}
+##########################################################
+# Create edx set, validation set (final hold-out test set)
+##########################################################
+
+# Note: this process could take a couple of minutes
+
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+
+library(tidyverse)
+library(caret)
+library(data.table)
+library(dplyr)
+
+# MovieLens 10M dataset:
+# https://grouplens.org/datasets/movielens/10m/
+# http://files.grouplens.org/datasets/movielens/ml-10m.zip
+
+# changing timeout to more than 60 seconds to prevent error
+options(timeout = 3600)
+
+
+
+dl <- tempfile()
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+ratings <- fread(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                 col.names = c("userId", "movieId", "rating", "timestamp"))
+
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+
+# if using R 4.0 or later:
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(movieId),
+                                           title = as.character(title),
+                                           genres = as.character(genres))
+
+movielens <- left_join(ratings, movies, by = "movieId")
+```
+
+Like every machine learning project we need two sets of data: one to be used to train the model and another one to test how good our model works. With the code below we split our downloaded data to the edx training dataset and the validation dataset to test our models.
+
+```{r, echo = TRUE, message = FALSE, warning = FALSE, eval = TRUE}
+# Validation set will be 10% of MovieLens data
+set.seed(1) # if using R 3.5 or earlier, use `set.seed(1)`
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+
+# Make sure userId and movieId in validation set are also in edx set
+validation <- temp %>% 
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+
+# Add rows removed from validation set back into edx set
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+
+rm(dl, ratings, movies, test_index, temp, movielens, removed)
+```
+
+\pagebreak
+
+
+# Exploring the Data 
+
+
+## Data Analysis
+
+To see the dataset, we find the first 5 rows of "edx" data as below.
+“userID”, “movieID”, “rating”, “timestamp”, “title”, and “genres” are the features in each row and in each row we can find the rating of a user for a single movie. We can have multiple rows for each movie and user. 
+
+```{r head, echo = FALSE}
+head(edx)
+```
+
+Checking for missing values :
+
+```{r summary, echo = FALSE}
+summary(edx)
+sum(is.na(edx))
+```
+
+we have 69878 unique movies and  10677 users in the edx data :
+
+```{r, echo = FALSE}
+edx %>%
+summarize(n_users = n_distinct(userId), 
+          n_movies = n_distinct(movieId))
+```
+
+With the histogram of the rating data we can see that most of the audiences prefer to rate the movies with high number rather than the lowers. Most of the movies have a rating near to 4 and then in the next steps 3 and 5 and a few people have rated movies with low marks.
+
+```{r histogram_&_mean_of_the_rating_column_in_edx_dataset, echo = FALSE}
+hist(edx$rating)
+```
+
+
+We can see that some movies have more ratings, while some others have fewer. We have to know exactly this amount because some movies with fewer ratings can change the power of prediction in our models.
+
+```{r histogram_of_number_of_ratings_of_movies, echo = TRUE, fig.height=4, fig.width=5}
+edx %>%
+  count(movieId) %>%
+  ggplot(aes(n)) +
+  geom_histogram(bins = 40) +
+  scale_x_log10() +
+  xlab("Ratings") +
+  ylab("Movies")
+
+edx %>% group_by(title) %>%
+  summarise(count = n()) %>%
+  slice_max(count, n=10)
+```
+
+
+Most of the users in this dataset have rated 30 up to 100 movies. 
+
+
+```{r users_ratings_&_its_histogram, echo = TRUE, fig.height=4, fig.width=5}
+movies_by_title <- edx %>% group_by(title)
+avg_of_movies <- movies_by_title %>% summarize(count = n()
+                                               , avg_movie_rating = mean(rating))
+
+avg_of_movies %>% 
+  ggplot(aes(avg_movie_rating)) + 
+  geom_histogram(bins = 40) +
+  xlim(0, 5)
+
+users <- edx %>% count(userId)
+users %>% ggplot(aes(n)) +
+  geom_histogram(bins = 40) +
+  scale_x_log10() +
+  xlab("Ratings") + 
+  ylab("Users")
+
+```
+
+
+We also can see and use the average of ratings given to movies by each user to se the average rating of the to all the movies they have seen.
+
+
+```{r average_of_user_ratings_&_its_histogram, echo = TRUE, fig.height=4, fig.width=5}
+edx %>%
+  group_by(userId) %>%
+  summarize(avg_ur = mean(rating)) %>%
+  ggplot(aes(avg_ur)) +
+  geom_histogram(bins = 40) +
+  xlab("Ratings") +
+  ylab("Users") 
+```
+
+\pagebreak
+# Models
+
+The function used to calculate the predictions with the true ratings :
+
+```{r RMSE_function2, echo = TRUE}
+RMSE <- function(predictions, ratings){
+  sqrt(mean((predictions - ratings)^2))}
+```
+
+Our goal is to minimize and lower the RMSE.
+
+
+### ratings average of the movies
+
+The first model we build to predict the ratings in this project is just build by the average of the ratings for all of the movies, without paying attention to the users.
+
+```{r, echo = TRUE}
+ratings_avg <- mean(edx$rating) 
+prediction <- RMSE(validation$rating, ratings_avg)
+prediction
+results <- tibble(model = "ratings average of the movies", RMSE = prediction)
+results
+```
+
+This is the first RMSE that we can use to predict this model to the next ones and see if we reach below 0.89999.
+
+To improve the next models we use some of the information we got from the exploration & analysis on the dataset.
+
+
+### movie effect
+
+To improve the last model we had we use the fact that some movies that are more popular among the audiences have better and higher ratings than others that are less popular. We calculate the difference between the mean rating of each movie and the mean of all the ratingsc (mean rating of all movies) which we calculated and used in the previous model.
+
+```{r Number_of_movies_with_the computed_b_i, echo = TRUE, fig.height=3, fig.width=4}
+movie_effect <- edx %>%
+  group_by(movieId) %>%
+  summarize(avg = mean(rating - ratings_avg))
+
+movie_effect %>% ggplot(aes(avg)) +
+  geom_histogram(bins = 40) +
+  ylab("Movies Count") 
+
+predicted_ratings <- ratings_avg +  validation %>%
+  left_join(movie_effect, by='movieId') %>%
+  pull(avg)
+
+head(predicted_ratings)
+
+new_prediction <- RMSE(predicted_ratings, validation$rating)
+results <- bind_rows(results, data_frame(model = "movie effect" 
+                                         ,RMSE = new_prediction ))
+
+results
+```
+
+We can see that we got a lower RMSE in this model than the previous model and the movie effect improved the model, but we can still improve this improved model by having the same approach for the ratings of each user for the movies and combine the movie effect with the user effect. Also we have not yet reached our goal to get a RMSE lower than 0.89999 so we have to keep up improving our model.
+
+
+### movie and user effect
+
+In this model we have to compute the average rating for users.
+
+```{r, echo = TRUE}
+users <- edx %>% left_join(movie_effect, by='movieId') %>%
+  group_by(userId) %>%
+  filter(n() >= 100)
+
+users <- users %>% mutate(users_avg = mean(rating - ratings_avg - avg))
+
+users %>% ggplot(aes(users_avg)) +
+  geom_histogram(bins = 40) +
+  ylab("Movies Count") 
+
+users <- edx %>%
+  left_join(movie_effect, by='movieId') %>%
+  group_by(userId) %>%
+  summarize(users_avg = mean(rating - ratings_avg - avg))
+
+head(movie_effect)
+head(users)
+
+a <- users %>% select(users_avg, userId)
+head(a)
+nrow(a)
+nrow(movie_effect)
+
+new_preds <- validation %>%
+  left_join(movie_effect, by='movieId')
+new_preds <- new_preds %>%
+  left_join(a, by='userId') 
+new_preds <- new_preds %>%
+  mutate(pred = ratings_avg + avg + users_avg) %>%
+  pull(pred)
+
+head(new_preds)
+
+head(validation)
+nrow(validation)
+```
+
+Now we make our predictions to see the RMSE improvement.
+
+
+```{r mu_model, echo = TRUE}
+mu_model <- RMSE(new_preds, validation$rating)
+mu_model
+
+results
+
+results <- bind_rows(results
+                    ,data_frame(model="movie and user effect"
+                    ,RMSE = mu_model))
+results
+```
+
+Now we can see that by this model built on both the users effect and movie effect we reached the goal of the project the RMSE is equal to 0.8653488 and we can see that our improvent was successful and we have now a model more accurate than the two previous models.
+
+## Conclusion
+
+We built a simple machine learning model to predict the rating of the movies and we reached the goal to have a model with a RMSE lower than 0.89999.
+But it is still possible to improve the last model by analyzing other features like genre , date & ... and see how their effect can change the RMSE of the new models built with them.
